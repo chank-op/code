@@ -1,6 +1,8 @@
 use crate::database::models::DatabaseError;
 use crate::models::v3::notifications::{NotificationChannel, NotificationType};
 use crate::routes::ApiError;
+use crate::util::error::ApiContext as _;
+use crate::util::error::Context as _;
 use serde::{Deserialize, Serialize};
 use xredis::RedisPool;
 
@@ -123,27 +125,40 @@ where
         html: String,
     }
 
-    let mut redis_conn = redis.connect().await?;
+    let mut redis_conn = redis
+        .connect()
+        .await
+        .wrap_internal_err("connecting to Redis")?;
     let redis_key = redis_conn
         .key()
         .metadata(TEMPLATES_DYNAMIC_HTML_NAMESPACE, key);
-    if let Some(body) =
-        redis_conn.get_deserialized::<HtmlBody>(&redis_key).await?
+    if let Some(body) = redis_conn
+        .get_deserialized::<HtmlBody>(&redis_key)
+        .await
+        .wrap_internal_err("fetching cached data from Redis")?
     {
         return Ok(body.html);
     }
 
     drop(redis_conn);
 
-    let cached = HtmlBody { html: get().await? };
-    let mut redis_conn = redis.connect().await?;
+    let cached = HtmlBody {
+        html: get()
+            .await
+            .wrap_api_err("generating notification template HTML")?,
+    };
+    let mut redis_conn = redis
+        .connect()
+        .await
+        .wrap_internal_err("connecting to Redis")?;
     let redis_key = redis_conn
         .key()
         .metadata(TEMPLATES_DYNAMIC_HTML_NAMESPACE, key);
 
     redis_conn
         .set_serialized(&redis_key, &cached, Some(HTML_DATA_CACHE_EXPIRY))
-        .await?;
+        .await
+        .wrap_internal_err("storing cached data in Redis")?;
 
     Ok(cached.html)
 }
